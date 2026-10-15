@@ -8,7 +8,7 @@ enum class FrameTier { FAST, MEDIUM, SLOW, TIMEOUT, FAILED, PENDING }
 object UiRules {
     fun restoredGroup(snapshot: CatalogSnapshot): String {
         val groups = snapshot.channels.filter { it.sourceId == snapshot.selectedSourceId }.map { it.group }.distinct()
-        return snapshot.settings.browseGroups[snapshot.selectedSourceId]?.takeIf { it in groups } ?: groups.firstOrNull() ?: "未分组"
+        return snapshot.settings.browseGroups[snapshot.selectedSourceId]?.takeIf { it == "全部" || it in groups } ?: "全部"
     }
 
     fun thumbnailWindow(channels: List<Channel>, visibleIndices: List<Int>): List<String> {
@@ -66,7 +66,7 @@ object UiRules {
         return group[Math.floorMod(index + delta, group.size)]
     }
     fun visibleChannels(snapshot: CatalogSnapshot, group: String, query: String): List<Channel> = snapshot.channels.filter {
-        it.sourceId == snapshot.selectedSourceId && if (query.isNotBlank()) it.name.contains(query.trim(), ignoreCase = true) else it.group == group
+        it.sourceId == snapshot.selectedSourceId && if (query.isNotBlank()) it.name.contains(query.trim(), ignoreCase = true) else group == "全部" || it.group == group
     }
     fun validHttpAddress(value: String): Boolean = runCatching {
         val uri = URI(value.trim())

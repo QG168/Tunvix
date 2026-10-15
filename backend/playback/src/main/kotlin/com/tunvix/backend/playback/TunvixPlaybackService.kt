@@ -13,7 +13,9 @@ import androidx.media3.session.SessionResult
 import android.content.Context
 import android.content.Intent
 import androidx.annotation.OptIn
-import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.ForwardingSimpleBasePlayer
+import androidx.media3.common.Player
+import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
@@ -31,12 +33,15 @@ object PlaybackRuntime {
         return current ?: Media3PlaybackController.create(app).also { controller ->
             current = controller
             controller.onDisposed = { if (current === controller) current = null }
+            controller.scheduleSleepAlarm = { deadline -> SleepTimerAlarm.schedule(app, deadline) }
             controller.beforePlay = {
                 // Playback is initiated by a visible activity, or an existing media session.
                 app.startService(Intent(app, TunvixPlaybackService::class.java))
             }
         }
     }
+
+    internal fun existing(): Media3PlaybackController? = current
 
     internal fun release(controller: Media3PlaybackController) {
         controller.stop()
@@ -59,15 +64,36 @@ class TunvixPlaybackService : MediaSessionService() {
         controller = PlaybackRuntime.obtain(this)
         controller.serviceOwned = true
         controller.beforeResume = ::ensureForegroundForResume
+        controller.onSleepTimerExpired = ::stopPlaybackAndService
         // Route system buttons through the same pause/focus/retry state machine as the UI.
-        val controls = object : ForwardingPlayer(controller.sessionPlayer) {
-            override fun play() = controller.resume()
-            override fun pause() = controller.pause()
-            override fun stop() = stopPlaybackAndService()
-            override fun setPlayWhenReady(playWhenReady: Boolean) {
+        val controls = object : ForwardingSimpleBasePlayer(controller.sessionPlayer) {
+            fun refreshCommands() = invalidateState()
+            override fun getState(): SimpleBasePlayer.State {
+                val state = super.getState()
+                val commands = state.availableCommands.buildUpon()
+                val skipCommands = intArrayOf(Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                    Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                if (controller.canSkipChannel) commands.addAll(*skipCommands) else commands.removeAll(*skipCommands)
+                return state.buildUpon().setAvailableCommands(commands.build()).build()
+            }
+            override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
                 if (playWhenReady) controller.resume() else controller.pause()
+                return Futures.immediateVoidFuture()
+            }
+            override fun handleStop(): ListenableFuture<*> {
+                stopPlaybackAndService()
+                return Futures.immediateVoidFuture()
+            }
+            override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
+                when (seekCommand) {
+                    Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> controller.skipChannel(-1)
+                    Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> controller.skipChannel(1)
+                    else -> return super.handleSeek(mediaItemIndex, positionMs, seekCommand)
+                }
+                return Futures.immediateVoidFuture()
             }
         }
+        controller.onChannelQueueChanged = controls::refreshCommands
         val builder = MediaSession.Builder(this, controls)
             .setCallback(object : MediaSession.Callback {
                 override fun onConnect(session: MediaSession, info: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
@@ -83,6 +109,10 @@ class TunvixPlaybackService : MediaSessionService() {
                 }
             })
             .setMediaButtonPreferences(listOf(
+                CommandButton.Builder(CommandButton.ICON_PREVIOUS)
+                    .setDisplayName("上一台").setPlayerCommand(Player.COMMAND_SEEK_TO_PREVIOUS).build(),
+                CommandButton.Builder(CommandButton.ICON_NEXT)
+                    .setDisplayName("下一台").setPlayerCommand(Player.COMMAND_SEEK_TO_NEXT).build(),
                 CommandButton.Builder(CommandButton.ICON_STOP)
                     .setDisplayName("停止播放").setSessionCommand(stopCommand).build(),
             ))
@@ -92,7 +122,7 @@ class TunvixPlaybackService : MediaSessionService() {
             builder.setSessionActivity(PendingIntent.getActivity(this, 0, launch,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         }
-        session = builder.build()
+        session = builder.build().also { addSession(it) }
     }
 
     // A background system resume must establish foreground ownership before requesting audio
@@ -129,6 +159,8 @@ class TunvixPlaybackService : MediaSessionService() {
     override fun onDestroy() {
         session?.release()
         session = null
+        controller.onChannelQueueChanged = null
+        controller.onSleepTimerExpired = null
         PlaybackRuntime.release(controller)
         super.onDestroy()
     }

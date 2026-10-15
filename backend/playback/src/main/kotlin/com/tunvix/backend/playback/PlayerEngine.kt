@@ -46,6 +46,7 @@ internal interface PlayerEngine {
     fun stopStream()
 
     fun attachSurface(surface: android.view.SurfaceView?)
+    fun attachTexture(surface: android.view.TextureView?) {}
     fun detachSurface()
     fun setAudioOnly(enabled: Boolean) {}
     fun setChannelMetadata(channel: com.tunvix.contract.Channel) {}

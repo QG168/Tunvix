@@ -61,7 +61,7 @@ class EpgRepository(context: Context) {
     private val mutable = MutableStateFlow(EpgState())
     val state = mutable.asStateFlow()
 
-    suspend fun load() = withContext(Dispatchers.IO) {
+    suspend fun load(automatic: Boolean = true) = withContext(Dispatchers.IO) {
         mutex.withLock {
             val root = runCatching { JSONObject(config.readFully().toString(Charsets.UTF_8)) }.getOrNull()
             val custom = root?.optJSONArray("sources") ?: JSONArray()
@@ -86,7 +86,7 @@ class EpgRepository(context: Context) {
             }
             mutable.value = EpgState(sources, documents, updated, matches = matches)
         }
-        refresh(false)
+        if (automatic) refresh(false)
     }
 
     suspend fun save(id: String?, name: String, url: String) = withContext(Dispatchers.IO) {
@@ -96,6 +96,7 @@ class EpgRepository(context: Context) {
             require(id != BUILTIN.id) { "内置节目单不能修改" }
             val old = mutable.value
             val existing = old.sources.firstOrNull { it.id == id }
+            require(id == null || existing != null) { "节目单订阅已被删除，请重新添加" }
             val source = EpgSource(existing?.id ?: UUID.randomUUID().toString(), name.trim(), checked)
             val sources = if (existing == null) listOf(source) + old.sources else old.sources.map { if (it.id == id) source else it }
             val changedUrl = existing?.url != checked
@@ -138,11 +139,12 @@ class EpgRepository(context: Context) {
         }
     }
 
-    suspend fun refresh(force: Boolean = true) = withContext(Dispatchers.IO) {
+    suspend fun refresh(force: Boolean = true, sourceId: String? = null) = withContext(Dispatchers.IO) {
         mutex.withLock {
             mutable.value = mutable.value.copy(refreshing = true)
             try {
                 for (source in mutable.value.sources) {
+                    if (sourceId != null && source.id != sourceId) continue
                     val old = mutable.value
                     if (!force && System.currentTimeMillis() - (old.updated[source.id] ?: 0L) < REFRESH_INTERVAL) continue
                     try {

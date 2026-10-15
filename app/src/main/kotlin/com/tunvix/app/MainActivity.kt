@@ -52,9 +52,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(SystemBarStyle.auto(android.graphics.Color.TRANSPARENT,android.graphics.Color.TRANSPARENT){false},SystemBarStyle.auto(android.graphics.Color.TRANSPARENT,android.graphics.Color.TRANSPARENT){false})
         model.requestPictureInPicture = { enterSmallWindow() }
-        model.requestPictureInPictureSettings = { guideSmallWindowPermission(alwaysOpen=true) }
+        model.requestPictureInPictureSettings = { openSmallWindowSettings() }
         model.requestPictureInPicturePermission = { guideSmallWindowPermission() }
-        if (intent.getBooleanExtra("openPlayback",false) && model.currentChannel!=null) model.page=Page.PLAYER
+        if (intent.getBooleanExtra("openPlayback",false) && model.currentChannel!=null) { model.page=Page.PLAYER;model.webRoute=if(model.playback.audioOnly)"audio" else "player" }
         volumeControlStream=android.media.AudioManager.STREAM_MUSIC
         connectivity=getSystemService(ConnectivityManager::class.java)
         updateNetwork()
@@ -71,7 +71,9 @@ class MainActivity : ComponentActivity() {
                 val picker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->
                     if(uri!=null){runCatching{contentResolver.takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION)};model.fileUri=uri.toString();model.fileName=contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use{if(it.moveToFirst())it.getString(0) else null} ?: "频道列表";if(model.formName.isBlank())model.formName=model.fileName.substringBeforeLast('.')}
                 }
-                BackHandler(enabled=model.page!=Page.HOME||model.overlay!=null||model.showIndex||model.searchOpen||model.fullscreen){model.back()}
+                BackHandler(enabled=if(model.services.demo)model.page!=Page.HOME||model.overlay!=null||model.showIndex||model.searchOpen||model.fullscreen else model.webRoute!="home"||model.overlay!=null){
+                    if(model.services.demo)model.back() else model.webBack?.invoke()
+                }
                 val keepAwake=!model.playback.audioOnly&&!model.pictureInPicture&&UiRules.keepScreenAwake(model.page,model.playback.phase,model.foreground,model.showIndex)
                 SideEffect {
                     updateSmallWindowParams()
@@ -88,7 +90,9 @@ class MainActivity : ComponentActivity() {
                     if(model.fullscreen){controller.systemBarsBehavior=WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE;controller.hide(WindowInsetsCompat.Type.systemBars())} else controller.show(WindowInsetsCompat.Type.systemBars())
                 }
                 Box(Modifier.fillMaxSize().background(Design.Background)) {
-                    if(model.pictureInPicture) model.currentChannel?.let { VideoArea(model,it,Modifier.fillMaxSize(),pip=true) }
+                    if(!model.services.demo) HtmlApp(model,dark,{picker.launch(arrayOf("*/*"))},
+                        Modifier.fillMaxSize().then(if(model.fullscreen||model.pictureInPicture)Modifier else Modifier.imePadding()))
+                    else if(model.pictureInPicture) model.currentChannel?.let { VideoArea(model,it,Modifier.fillMaxSize(),pip=true) }
                     else if(model.fullscreen)FullscreenScreen(model)
                     else Column(Modifier.fillMaxSize().background(bottomColor).imePadding().windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom)).windowInsetsPadding(WindowInsets.statusBars).windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))) {
                         Box(Modifier.weight(1f).fillMaxWidth().background(Design.Background)) {
@@ -112,11 +116,11 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    if(!model.pictureInPicture)model.toast?.let{message->
+                    if(model.services.demo&&!model.pictureInPicture)model.toast?.let{message->
                         Box(Modifier.align(Alignment.BottomCenter).padding(horizontal=20.dp,vertical=100.dp).background(Color(0xFF222E49),RoundedCornerShape(14.dp)).padding(horizontal=17.dp,vertical=12.dp)){Label(message,12,Color.White,align=androidx.compose.ui.text.style.TextAlign.Center)}
                         LaunchedEffect(message){delay(2500);if(model.toast==message)model.toast=null}
                     }
-                    if(!model.pictureInPicture)AppOverlay(model)
+                    if(model.services.demo&&!model.pictureInPicture)AppOverlay(model)
                 }
                 // Poll external volume-key changes while visible, without a private broadcast receiver.
                 LaunchedEffect(Unit){lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED){while(true){model.services.playback.refreshVolume();delay(300)}}}
@@ -159,11 +163,19 @@ class MainActivity : ComponentActivity() {
     private fun guideSmallWindowPermission(alwaysOpen: Boolean=false) {
         if(!supportsSmallWindow()){model.toast="此设备不支持系统画中画";return}
         if(!alwaysOpen && allowsSmallWindow())return
+        if(!model.services.demo && !alwaysOpen){model.webRoute="permissions";return}
         model.overlay=Overlay.Confirm("允许小窗播放", "请在系统设置中允许 Tunvix 使用画中画，开启后返回应用再点击小窗。", "前往系统设置") {
             model.overlay=null
             val settings=Intent("android.settings.PICTURE_IN_PICTURE_SETTINGS",Uri.parse("package:$packageName"))
             if(runCatching { startActivity(settings) }.isFailure)
                 runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:$packageName"))) }
+        }
+    }
+    private fun openSmallWindowSettings() {
+        val settings=Intent("android.settings.PICTURE_IN_PICTURE_SETTINGS",Uri.parse("package:$packageName"))
+        if(runCatching { startActivity(settings) }.isFailure) {
+            if(runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:$packageName"))) }.isFailure)
+                model.toast="无法打开系统设置，请在手机设置中查看 Tunvix 的画中画权限"
         }
     }
     private fun enterSmallWindow() {
@@ -195,9 +207,9 @@ class MainActivity : ComponentActivity() {
             if(pictureInPictureSessionActive || model.pictureInPicture)model.closePictureInPicture()
             else model.services.playback.stop()
         }
-        model.requestPictureInPicture=null;model.requestPictureInPictureSettings=null;model.requestPictureInPicturePermission=null
+        model.requestPictureInPicture=null;model.requestPictureInPictureSettings=null;model.requestPictureInPicturePermission=null;model.webBack=null
         if(::connectivity.isInitialized)connectivity.unregisterNetworkCallback(networkCallback)
         super.onDestroy()
     }
-    override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);if(intent.getBooleanExtra("openPlayback",false)&&model.currentChannel!=null)model.page=Page.PLAYER;intent.getStringExtra("preview")?.let{if(model.services.demo)model.preview(it)}}
+    override fun onNewIntent(intent:Intent){super.onNewIntent(intent);setIntent(intent);if(intent.getBooleanExtra("openPlayback",false)&&model.currentChannel!=null){model.page=Page.PLAYER;model.webRoute=if(model.playback.audioOnly)"audio" else "player"};intent.getStringExtra("preview")?.let{if(model.services.demo)model.preview(it)}}
 }

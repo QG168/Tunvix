@@ -26,6 +26,7 @@ internal data class StoredSource(
     val name: String,
     val kind: SourceKind,
     val location: String? = null,
+    val updatedAt: Long? = null,
 )
 
 internal data class StoredChannel(
@@ -180,13 +181,20 @@ internal object CatalogCodec {
             .append('\t').append(if (catalog.settings.hapticsEnabled) 1 else 0)
             .append('\t').append(if (catalog.settings.firstFrameEnabled) 1 else 0)
             .append('\t').append(catalog.settings.themeMode.name)
-            .append('\t').append(if (catalog.settings.autoPictureInPicture) 1 else 0).append('\n')
+            .append('\t').append(if (catalog.settings.autoPictureInPicture) 1 else 0)
+            .append('\t').append(if (catalog.settings.previewDetectionEnabled) 1 else 0)
+            .append('\t').append(if (catalog.settings.autoEpgUpdateEnabled) 1 else 0)
+            .append('\t').append(if (catalog.settings.mergeSameNameChannels) 1 else 0)
+            .append('\t').append(catalog.settings.defaultPlayerPanel)
+            .append('\t').append(if (catalog.settings.softViewingEnabled) 1 else 0).append('\n')
+        catalog.settings.customGroups.forEach { append("custom-group\t").append(escape(it)).append('\n') }
         catalog.settings.browseGroups.forEach { (sourceId, group) ->
             append("browse-group\t").append(escape(sourceId)).append('\t').append(escape(group)).append('\n')
         }
         catalog.sources.forEach { source ->
             append("source").append('\t').append(escape(source.id)).append('\t').append(escape(source.name))
-                .append('\t').append(source.kind.name).append('\t').append(escape(source.location)).append('\n')
+                .append('\t').append(source.kind.name).append('\t').append(escape(source.location))
+                .append('\t').append(source.updatedAt?.toString().orEmpty()).append('\n')
         }
         catalog.channels.forEach { channel ->
             append("channel").append('\t').append(escape(channel.id)).append('\t').append(escape(channel.sourceId))
@@ -224,6 +232,7 @@ internal object CatalogCodec {
         var selected: String? = null
         var settings = UserSettings()
         val browseGroups = linkedMapOf<String, String>()
+        val customGroups = linkedSetOf<String>()
         body.forEach { line ->
             val parts = line.split('\t')
             when (parts.firstOrNull()) {
@@ -236,9 +245,15 @@ internal object CatalogCodec {
                         firstFrameEnabled = parts.getOrNull(4)?.trim() == "1",
                         themeMode = parts.getOrNull(5)?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
                         autoPictureInPicture = parts.getOrNull(6) == "1",
+                        previewDetectionEnabled = parts.getOrNull(7) != "0",
+                        autoEpgUpdateEnabled = parts.getOrNull(8) != "0",
+                        mergeSameNameChannels = parts.getOrNull(9) != "0",
+                        defaultPlayerPanel = parts.getOrNull(10)?.takeIf { it in setOf("channels", "programmes", "remote") } ?: "channels",
+                        softViewingEnabled = parts.getOrNull(11) != "0",
                     )
                 }
 
+                "custom-group" -> unescape(parts.getOrNull(1))?.let(customGroups::add)
                 "browse-group" -> {
                     val id = unescape(parts.getOrNull(1)); val group = unescape(parts.getOrNull(2))
                     if (id != null && group != null) browseGroups[id] = group
@@ -251,6 +266,7 @@ internal object CatalogCodec {
                             name = unescape(parts[2]).orEmpty(),
                             kind = kind,
                             location = unescape(parts[4]),
+                            updatedAt = parts.getOrNull(5)?.toLongOrNull(),
                         )
                     }
                 }
@@ -298,7 +314,8 @@ internal object CatalogCodec {
             sources = effectiveSources,
             channels = channels.filter { channel -> effectiveSources.any { it.id == channel.sourceId } },
             selectedSourceId = selected?.takeIf { id -> effectiveSources.any { it.id == id } } ?: effectiveSources.firstOrNull()?.id,
-            settings = settings.copy(browseGroups = browseGroups.filterKeys { id -> effectiveSources.any { it.id == id } }),
+            settings = settings.copy(browseGroups = browseGroups.filterKeys { id -> effectiveSources.any { it.id == id } },
+                customGroups = (customGroups + channels.filter { it.sourceId == CUSTOM_SOURCE_ID }.map { it.group }).filter { it != DEFAULT_GROUP }),
         )
     }
 

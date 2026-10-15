@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <application>
+        <receiver android:name="com.tunvix.backend.playback.SleepTimerReceiver" android:exported="false" />
         <service android:name="com.tunvix.backend.playback.TunvixPlaybackService" android:exported="true" android:foregroundServiceType="mediaPlayback" android:stopWithTask="false">
             <intent-filter><action android:name="androidx.media3.session.MediaSessionService" /></intent-filter>
         </service>

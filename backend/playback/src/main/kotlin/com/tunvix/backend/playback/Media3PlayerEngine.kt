@@ -146,8 +146,10 @@ internal class Media3PlayerEngine(
     }
 
     override fun detachSurface() {
-        player.setVideoSurfaceView(null)
+        player.clearVideoSurface()
     }
+
+    override fun attachTexture(surface: android.view.TextureView?) { player.setVideoTextureView(surface) }
 
     override fun release() {
         player.removeListener(playerListener)

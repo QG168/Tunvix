@@ -1,7 +1,9 @@
 package com.tunvix.backend.playback
 
+import android.os.SystemClock
 import android.content.Context
 import android.view.SurfaceView
+import com.tunvix.contract.ChannelLines
 import com.tunvix.contract.Channel
 import com.tunvix.contract.PlaybackController
 import com.tunvix.contract.PlaybackPhase
@@ -59,6 +61,9 @@ class Media3PlaybackController internal constructor(
 
     private val engine = engineFactory(engineCallback)
 
+    private var channelQueue: List<Channel> = emptyList()
+    internal var onChannelQueueChanged: (() -> Unit)? = null
+    internal val canSkipChannel get() = currentChannel != null && channelQueue.size > 1
     private var currentChannel: Channel? = null
     private var generation = 0
     private var prepareId = 0
@@ -73,8 +78,12 @@ class Media3PlaybackController internal constructor(
 
     private var lastUrl: String? = null
     private var lastHeaders: Map<String, String> = emptyMap()
+    private var sleepTimerJob: Job? = null
+    internal var scheduleSleepAlarm: ((Long?) -> Unit)? = null
+    internal var onSleepTimerExpired: (() -> Unit)? = null
     private var retryJob: Job? = null
     private var currentSurface: SurfaceView? = null
+    private var currentTexture: android.view.TextureView? = null
     private var released = false
     private var backgroundPlayback = false
     internal var serviceOwned = false
@@ -128,7 +137,26 @@ class Media3PlaybackController internal constructor(
         autoRetriesLeft = MAX_AUTO_RETRIES
         val focusGranted = acquireFocus()
         currentSurface?.let { engine.attachSurface(it) }
+        currentTexture?.let { engine.attachTexture(it) }
         startPrepare(autoplay = focusGranted)
+    }
+
+    override fun setChannelQueue(channels: List<Channel>) {
+        if (released || channelQueue == channels) return
+        channelQueue = channels.toList()
+        onChannelQueueChanged?.invoke()
+    }
+
+    internal fun skipChannel(delta: Int) {
+        val current = currentChannel ?: return
+        if (released || channelQueue.size < 2) return
+        val exact = channelQueue.indexOfFirst { it.id == current.id }
+        val index = if (exact >= 0) exact else channelQueue.indexOfFirst { ChannelLines.sameChannel(it, current) }
+        val targetIndex = if (index >= 0) (index + delta + channelQueue.size) % channelQueue.size else if (delta > 0) 0 else channelQueue.lastIndex
+        val target = channelQueue[targetIndex]
+        val listening = snapshot.value.audioOnly
+        play(target)
+        if (listening) setAudioOnly(true)
     }
 
     override fun retry() {
@@ -179,6 +207,7 @@ class Media3PlaybackController internal constructor(
 
     override fun stop() {
         if (released) return
+        cancelSleepTimer()
         retryJob?.cancel()
         generation += 1
         prepareId += 1 // 之后到达的一切引擎回调均过期
@@ -202,8 +231,38 @@ class Media3PlaybackController internal constructor(
 
     override fun setAudioOnly(enabled: Boolean) {
         if (released || currentChannel == null) return
+        if (!enabled) cancelSleepTimer()
         engine.setAudioOnly(enabled)
         update { it.copy(audioOnly = enabled, videoFrameReady = false) }
+    }
+
+    private fun cancelSleepTimer() {
+        sleepTimerJob?.cancel(); sleepTimerJob = null
+        scheduleSleepAlarm?.invoke(null)
+        update { it.copy(sleepTimerDeadlineElapsed = null, sleepTimerRemainingSeconds = 0, sleepTimerMinutes = 0) }
+    }
+
+    override fun setSleepTimer(minutes: Int) {
+        if (released) return
+        cancelSleepTimer()
+        if (minutes !in setOf(15, 30, 45, 60) || !snapshot.value.audioOnly) return
+        val deadline = SystemClock.elapsedRealtime() + minutes * 60_000L
+        update { it.copy(sleepTimerDeadlineElapsed = deadline, sleepTimerRemainingSeconds = minutes * 60L, sleepTimerMinutes = minutes) }
+        scheduleSleepAlarm?.invoke(deadline)
+        sleepTimerJob = scope.launch {
+            while (snapshot.value.sleepTimerDeadlineElapsed == deadline) {
+                val remaining = deadline - SystemClock.elapsedRealtime()
+                if (remaining <= 0) { expireSleepTimer(deadline); break }
+                update { it.copy(sleepTimerRemainingSeconds = (remaining + 999) / 1000) }
+                delay(minOf(1000L, remaining))
+            }
+        }
+    }
+
+    internal fun expireSleepTimer(deadline: Long) {
+        if (released || snapshot.value.sleepTimerDeadlineElapsed != deadline || SystemClock.elapsedRealtime() < deadline) return
+        val action = onSleepTimerExpired
+        if (action != null) action() else stop()
     }
 
     override fun setBackgroundPlayback(enabled: Boolean) { backgroundPlayback = enabled }
@@ -251,6 +310,7 @@ class Media3PlaybackController internal constructor(
 
     internal fun dispose() {
         if (released) return
+        cancelSleepTimer()
         released = true
         retryJob?.cancel()
         scope.cancel()
@@ -267,6 +327,7 @@ class Media3PlaybackController internal constructor(
     // ---------- Surface ----------
 
     override fun attachSurface(surface: SurfaceView) {
+        currentTexture = null
         currentSurface = surface
         engine.attachSurface(surface)
     }
@@ -276,6 +337,13 @@ class Media3PlaybackController internal constructor(
             currentSurface = null
             engine.detachSurface()
         }
+    }
+
+    override fun attachTexture(surface: android.view.TextureView) {
+        currentSurface = null; currentTexture = surface; engine.attachTexture(surface)
+    }
+    override fun detachTexture(surface: android.view.TextureView) {
+        if (currentTexture === surface) { currentTexture = null; engine.detachSurface() }
     }
 
     // ---------- 音量 ----------

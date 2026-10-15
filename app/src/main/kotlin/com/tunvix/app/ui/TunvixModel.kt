@@ -9,6 +9,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 
 enum class Page { HOME, FAVORITES, RECENT, MANAGEMENT, PLAYER, SOURCES, ADD, SUBSCRIBE, LOCAL, MANUAL, EDIT_SOURCE, RESULT, ABOUT, EPG }
@@ -21,6 +22,13 @@ sealed interface Overlay {
     data class Network(val channel: Channel) : Overlay
 }
 class TunvixModel(val services: AppServices) : ViewModel() {
+    var webRoute by mutableStateOf("home")
+    private var requestedPlaybackChannelId: String? = null
+    var lastAudioChannelId: String? = null
+    var webDraft = "{}"
+    var webBack: (() -> Unit)? = null
+    var systemBrightness by mutableStateOf(50)
+    var sourceFileNames by mutableStateOf<Map<String, String>>(emptyMap())
     var epg by mutableStateOf(com.tunvix.app.services.EpgState()); private set
     private fun epgAction(action: suspend (com.tunvix.app.services.EpgRepository) -> Unit) {
         val repository = services.epg ?: run { toast = "演示版不获取在线节目单"; return }
@@ -71,6 +79,7 @@ class TunvixModel(val services: AppServices) : ViewModel() {
         previewExpired = false
         history.clear()
         page = Page.HOME
+        webRoute = "home"
     }
     var screenshotRefreshing by mutableStateOf(false); private set
     var refreshingSourceIds by mutableStateOf<Set<String>>(emptySet()); private set
@@ -81,8 +90,8 @@ class TunvixModel(val services: AppServices) : ViewModel() {
         if(source.id in refreshingSourceIds)return
         refreshingSourceIds=refreshingSourceIds+source.id
         viewModelScope.launch {
-            try { when(val result=services.catalog.refreshSource(source.id)) {
-                is Outcome.Success -> toast="${source.name}：订阅已更新"
+            try { when(val result=if(source.kind==SourceKind.CUSTOM)services.catalog.refreshThumbnails(catalog.channels.filter{it.sourceId==source.id}.map{it.id}) else services.catalog.refreshSource(source.id)) {
+                is Outcome.Success -> toast="${source.name}：${when(source.kind){SourceKind.CUSTOM->"画面已更新";SourceKind.LOCAL_FILE->"文件已更新";else->"订阅已更新"}}"
                 is Outcome.Failure -> toast="刷新失败：${result.message}"
             } } finally { refreshingSourceIds=refreshingSourceIds-source.id }
         }
@@ -130,7 +139,7 @@ class TunvixModel(val services: AppServices) : ViewModel() {
                 }
             }
         }
-    private var selectedPlayerGroup by mutableStateOf("央视频道")
+    private var selectedPlayerGroup by mutableStateOf(if (services.demo) "央视频道" else "全部")
     var playerGroup: String
         get() = selectedPlayerGroup
         set(value) { if (selectedPlayerGroup!=value) { selectedPlayerGroup=value;showControls() } }
@@ -191,17 +200,20 @@ class TunvixModel(val services: AppServices) : ViewModel() {
     }
     private fun cancelImport() { if(importJob?.isActive == true){importGeneration++;importJob?.cancel();busy=false}; importJob=null }
     var mobileNetwork by mutableStateOf(false)
-    val currentChannel get() = catalog.channels.firstOrNull { it.id == playback.channelId }
+    val currentChannel get() = catalog.channels.firstOrNull { it.id == (playback.channelId ?: lastAudioChannelId.takeIf { webRoute == "audio" || webRoute == "player" }) }
     val currentSource get() = catalog.sources.firstOrNull { it.id == catalog.selectedSourceId }
     fun groups(sourceId: String? = catalog.selectedSourceId): List<String> {
         val real = catalog.channels.filter { it.sourceId == sourceId }.map { it.group }.distinct()
-        return if (services.demo && sourceId == "online") listOf("央视频道","卫视频道","体育","电影","少儿","港澳台","4K专区") else real.ifEmpty { listOf("未分组") }
+        return if (services.demo && sourceId == "online") listOf("央视频道","卫视频道","体育","电影","少儿","港澳台","4K专区") else (if (services.demo) emptyList() else listOf("全部")) + real.ifEmpty { listOf("未分组") }
     }
     private data class ControlsKey(val phase: PlaybackPhase, val enabled: Boolean, val visible: Boolean, val interaction: Long, val fullscreen: Boolean)
     init {
         services.epg?.let { repository ->
             viewModelScope.launch { repository.state.collect { epg = it } }
-            epgAction { it.load() }
+            epgAction {
+                services.catalogReady.first { ready -> ready }
+                it.load(services.catalog.snapshot.value.settings.autoEpgUpdateEnabled)
+            }
         }
         viewModelScope.launch {
             snapshotFlow {
@@ -212,6 +224,15 @@ class TunvixModel(val services: AppServices) : ViewModel() {
                 if (state.enabled && state.visible) { delay(3500);controlsVisible=false }
             }
         }
+        viewModelScope.launch {
+            snapshotFlow {
+                val current = currentChannel
+                val source = current?.sourceId ?: catalog.selectedSourceId
+                val selected = playerGroup.takeIf { it in groups(source) } ?: "全部"
+                val raw = catalog.channels.filter { it.sourceId == source && (selected == "全部" || it.group == selected) }
+                if (catalog.settings.mergeSameNameChannels) ChannelLines.representatives(raw) else raw
+            }.collect { services.playback.setChannelQueue(it) }
+        }
         viewModelScope.launch { services.catalogReady.collect { catalogReady = it } }
         viewModelScope.launch { services.catalogError.collect { catalogError = it } }
         viewModelScope.launch {
@@ -219,7 +240,7 @@ class TunvixModel(val services: AppServices) : ViewModel() {
                 val browse = page in listOf(Page.HOME, Page.FAVORITES, Page.RECENT) && foreground && catalogReady && catalogError == null
                 val ids=visibleIds.filter { id -> catalog.channels.any { it.id == id } }
                 val requested=if(browse && !screenshotRefreshing)ids else emptyList()
-                BrowseKey(requested,browse && !screenshotRefreshing,catalog.settings.firstFrameEnabled,
+                BrowseKey(requested,browse && !screenshotRefreshing && catalog.settings.previewDetectionEnabled,catalog.settings.firstFrameEnabled,
                     catalog.channels.filter { it.id in requested.toSet() }.map { it.id to it.url to it.headers })
             }.collectLatest { key -> services.catalog.requestThumbnails(key.ids, key.network) }
         }
@@ -232,6 +253,11 @@ class TunvixModel(val services: AppServices) : ViewModel() {
             }
         } }
         viewModelScope.launch { services.playback.snapshot.collect {
+            it.channelId?.takeIf { id -> id != playback.channelId }?.let { id ->
+                if (id != requestedPlaybackChannelId) viewModelScope.launch { services.catalog.recordWatched(id) }
+                requestedPlaybackChannelId = null
+            }
+            if (it.channelId != null && (it.audioOnly || webRoute == "audio")) lastAudioChannelId = it.channelId
             playback = it
             if (it.phase==PlaybackPhase.IDLE) showControls()
         } }
@@ -246,6 +272,7 @@ class TunvixModel(val services: AppServices) : ViewModel() {
             formName = ""; formLink = ""; formGroup = "未分组"; fileUri = null; fileName = ""; editingChannelId = null; editingSourceId = null
         }
     }
+    fun prepareWebNavigation() { cancelScreenshotRefresh(); cancelImport(); navigationGeneration++ }
     fun tab(next: Page) { navigate(next); history.clear(); searchOpen = false; query = "" }
     fun back() {
         if(overlay==null&&!showIndex&&!fullscreen){cancelImport();navigationGeneration++}
@@ -276,6 +303,7 @@ class TunvixModel(val services: AppServices) : ViewModel() {
         if (!services.demo && !services.backendReady) { overlay = Overlay.Error("播放器尚未接入", "当前为 UI 验收版本，播放器由独立模块提供。"); return }
         if (page != Page.PLAYER) history.addLast(page)
         page = Page.PLAYER; overlay = null; previewPhase = null; previewExpired = false; playerGroup = c.group; playSession++; showControls()
+        requestedPlaybackChannelId = c.id
         services.playback.play(c)
         viewModelScope.launch { services.catalog.recordWatched(c.id) }
     }
@@ -358,9 +386,11 @@ class TunvixModel(val services: AppServices) : ViewModel() {
     }
     fun refreshPlayingSource() {
         val channel = currentChannel ?: return
+        val selected = playerGroup
         operation({ services.catalog.refreshSource(channel.sourceId) }, "订阅已更新") {
             services.catalog.snapshot.value.channels.firstOrNull { it.id == channel.id }?.let {
-                if (foreground) play(it, true) else pendingRefresh = navigationGeneration to it
+                if (foreground) { play(it, true); playerGroup = selected.takeIf { group -> group in groups(it.sourceId) } ?: "全部" }
+                else pendingRefresh = navigationGeneration to it
             }
                 ?: back()
         }

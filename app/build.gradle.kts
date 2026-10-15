@@ -10,8 +10,8 @@ android {
         applicationId = "com.tunvix.app"
         minSdk = 29
         targetSdk = 37
-        versionCode = 11
-        versionName = "0.2.8"
+        versionCode = 22
+        versionName = "0.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }
@@ -26,6 +26,7 @@ if (providers.gradleProperty("uiOnly").orNull == "true") {
     androidComponents.beforeVariants(androidComponents.selector().withFlavor("mode" to "live")) { it.enable = false }
 }
 dependencies {
+    implementation("androidx.webkit:webkit:1.17.1")
     if (providers.gradleProperty("uiOnly").orNull != "true") {
         add("liveImplementation", project(":backend:importer"))
         add("liveImplementation", project(":backend:catalog"))

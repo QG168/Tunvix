@@ -221,7 +221,7 @@ class LocalCatalogRepository internal constructor(
                         if (target != null) nextGeneration(id)
                         val previous = current.channels.filter { it.sourceId == id }
                         val (channels, _) = buildChannels(id, drafts, previous)
-                        val source = StoredSource(id, cleanName, kind, location)
+                        val source = StoredSource(id, cleanName, kind, location, clock())
                         Outcome.Success(
                             current.copy(
                                 sources = if (target == null) current.sources + source
@@ -278,7 +278,7 @@ class LocalCatalogRepository internal constructor(
                     val (channels, _) = buildChannels(id, drafts, previous)
                     Outcome.Success(
                         current.copy(
-                            sources = current.sources.map { if (it.id == id) it.copy(location = location) else it },
+                            sources = current.sources.map { if (it.id == id) it.copy(location = location, updatedAt = clock()) else it },
                             channels = replaceChannels(current.channels, id, channels),
                         ),
                     )
@@ -366,8 +366,8 @@ class LocalCatalogRepository internal constructor(
                 }
                 Outcome.Success(
                     current.copy(
-                        sources = if (current.sources.any { it.id == CUSTOM_SOURCE_ID }) current.sources
-                        else current.sources + StoredSource(CUSTOM_SOURCE_ID, "自建频道", SourceKind.CUSTOM, null),
+                        sources = if (current.sources.any { it.id == CUSTOM_SOURCE_ID }) current.sources.map { if (it.id == CUSTOM_SOURCE_ID) it.copy(updatedAt = clock()) else it }
+                        else current.sources + StoredSource(CUSTOM_SOURCE_ID, "自建频道", SourceKind.CUSTOM, null, clock()),
                         channels = if (previous == null) current.channels + merged
                         else current.channels.map { if (it.id == merged.id) merged else it },
                         selectedSourceId = CUSTOM_SOURCE_ID,
@@ -386,6 +386,23 @@ class LocalCatalogRepository internal constructor(
                 Outcome.Success(current.copy(channels = current.channels.filterNot { it.id == id }))
             }
         }
+    }
+
+    override suspend fun addCustomGroup(name: String): Outcome<Unit> = mutate { current ->
+        val group = name.trim()
+        when {
+            group.isEmpty() -> Outcome.Failure("请输入分组名称")
+            group == DEFAULT_GROUP || group in current.settings.customGroups -> Outcome.Failure("分组已存在")
+            else -> Outcome.Success(current.copy(settings = current.settings.copy(customGroups = current.settings.customGroups + group)))
+        }
+    }
+
+    override suspend fun deleteCustomGroup(name: String): Outcome<Unit> = mutate { current ->
+        if (name == DEFAULT_GROUP) Outcome.Failure("未分组不能删除")
+        else Outcome.Success(current.copy(
+            channels = current.channels.map { if (it.sourceId == CUSTOM_SOURCE_ID && it.group == name) it.copy(group = DEFAULT_GROUP) else it },
+            settings = current.settings.copy(customGroups = current.settings.customGroups.filterNot { it == name }),
+        ))
     }
 
     override suspend fun setFavorite(id: String, favorite: Boolean): Outcome<Unit> = mutate { current ->
@@ -436,7 +453,7 @@ class LocalCatalogRepository internal constructor(
     }
 
     override suspend fun rememberBrowseGroup(sourceId: String, group: String): Outcome<Unit> = mutate { current ->
-        if (current.channels.none { it.sourceId == sourceId && it.group == group }) Outcome.Failure("分组不存在")
+        if (current.sources.none { it.id == sourceId } || (group != "全部" && current.channels.none { it.sourceId == sourceId && it.group == group })) Outcome.Failure("分组不存在")
         else Outcome.Success(current.copy(settings = current.settings.copy(browseGroups = current.settings.browseGroups + (sourceId to group))))
     }
 
@@ -826,7 +843,7 @@ class LocalCatalogRepository internal constructor(
     }.getOrDefault(false)
 
     private fun StoredCatalog.toSnapshot(): CatalogSnapshot = CatalogSnapshot(
-        sources = sources.map { LiveSource(it.id, it.name, it.kind, it.location) },
+        sources = sources.map { LiveSource(it.id, it.name, it.kind, it.location, it.updatedAt) },
         channels = channels.map { channel ->
             Channel(
                 id = channel.id,
@@ -839,6 +856,7 @@ class LocalCatalogRepository internal constructor(
                 headers = channel.headers,
                 externalId = channel.externalId,
                 firstFrame = channel.firstFrame,
+                watchedAt = channel.watchedAt,
             )
         },
         selectedSourceId = selectedSourceId?.takeIf { id -> sources.any { it.id == id } },

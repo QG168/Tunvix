@@ -5,13 +5,14 @@ import kotlinx.coroutines.flow.StateFlow
 
 /** v1 integration contract: no Compose dependencies. IDs remain stable across refreshes. */
 enum class SourceKind { SUBSCRIPTION, LOCAL_FILE, CUSTOM }
-data class LiveSource(val id: String, val name: String, val kind: SourceKind, val location: String? = null)
+data class LiveSource(val id: String, val name: String, val kind: SourceKind, val location: String? = null, val updatedAt: Long? = null)
 data class Channel(
     val id: String, val sourceId: String, val name: String, val url: String,
     val group: String = "未分组", val logoUrl: String? = null, val thumbnailUri: String? = null,
     val headers: Map<String, String> = emptyMap(), val externalId: String? = null,
     /** Latest persisted first-frame measurement for this exact media; null when never measured. */
     val firstFrame: FirstFrameResult? = null,
+    val watchedAt: Long? = null,
 )
 
 /** First-frame latency: media request issued until the first decodable frame, excluding queueing and JPEG compression. */
@@ -28,6 +29,12 @@ data class UserSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val browseGroups: Map<String, String> = emptyMap(),
     val autoPictureInPicture: Boolean = false,
+    val previewDetectionEnabled: Boolean = true,
+    val autoEpgUpdateEnabled: Boolean = true,
+    val customGroups: List<String> = emptyList(),
+    val mergeSameNameChannels: Boolean = true,
+    val defaultPlayerPanel: String = "channels",
+    val softViewingEnabled: Boolean = true,
 )
 data class CatalogSnapshot(
     val sources: List<LiveSource> = emptyList(), val channels: List<Channel> = emptyList(),
@@ -64,6 +71,8 @@ interface CatalogRepository {
     suspend fun deleteSource(id: String): Outcome<Unit>
     suspend fun saveCustomChannel(channelId: String?, draft: ChannelDraft): Outcome<Unit>
     suspend fun deleteCustomChannel(id: String): Outcome<Unit>
+    suspend fun addCustomGroup(name: String): Outcome<Unit> = Outcome.Failure("分组管理暂不可用")
+    suspend fun deleteCustomGroup(name: String): Outcome<Unit> = Outcome.Failure("分组管理暂不可用")
     suspend fun setFavorite(id: String, favorite: Boolean): Outcome<Unit>
     suspend fun recordWatched(id: String): Outcome<Unit>
     suspend fun removeRecent(id: String): Outcome<Unit>
@@ -89,11 +98,16 @@ data class PlaybackSnapshot(
     val videoFrameReady: Boolean = false,
     /** Session-only; never stored in the catalog. */
     val audioOnly: Boolean = false,
+    val sleepTimerDeadlineElapsed: Long? = null,
+    val sleepTimerRemainingSeconds: Long = 0,
+    val sleepTimerMinutes: Int = 0,
 )
 interface PlaybackController {
     val snapshot: StateFlow<PlaybackSnapshot>
     fun attachSurface(surface: SurfaceView)
     fun detachSurface(surface: SurfaceView)
+    fun attachTexture(surface: android.view.TextureView) {}
+    fun detachTexture(surface: android.view.TextureView) {}
     fun play(channel: Channel)
     fun pause()
     fun resume()
@@ -102,6 +116,9 @@ interface PlaybackController {
     fun setVolume(percent: Int)
     fun refreshVolume()
     fun setAudioOnly(enabled: Boolean) {}
+    fun setSleepTimer(minutes: Int) {}
+    /** Current browse group, already consolidated according to the merge setting. */
+    fun setChannelQueue(channels: List<Channel>) {}
     fun setBackgroundPlayback(enabled: Boolean) {}
     /** Suspend data pulling on background entry without forgetting an explicit user pause. */
     fun onBackground()
