@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 订阅下载需要网络；本地文件通过系统文件选择器授权，不需要存储权限。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

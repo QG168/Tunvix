@@ -1,0 +1,6 @@
+央视,#genre#
+CCTV-1 综合,http://stream.example.invalid/live/cctv1
+CCTV-2 财经,http://stream.example.invalid/live/cctv2
+卫视,#genre#
+湖南卫视,http://stream.example.invalid/live/hunan.m3u8?token=REDACTED
+浙江卫视,http://stream.example.invalid/live/zhejiang

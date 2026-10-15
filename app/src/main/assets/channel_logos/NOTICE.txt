@@ -1,0 +1,6 @@
+Television channel artwork source: https://github.com/vircloud/TVLogo
+Snapshot commit: bcb7075771a1dc8ef217f77383edb40e2bf2e762
+Upstream README: assets collected from public Internet; 300 x 180 transparent PNG.
+The upstream repository does not declare an explicit redistribution license for these images.
+Channel trademarks and artwork remain with their respective rights holders.
+This provenance notice is attribution, not a grant of permission for public distribution.

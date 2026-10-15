@@ -1,0 +1,15 @@
+#EXTM3U url-tvg="https://epg.example.invalid/e.xml"
+# 固定测试样本：域名、token、expire 均为占位值，与真实订阅无关
+#EXTINF:-1 tvg-id="cctv1" tvg-name="CCTV1" tvg-logo="https://img.example.invalid/cctv1.png" group-title="央视",CCTV-1 综合
+#EXTVLCOPT:http-user-agent=TunvixSample/1.0
+#EXTVLCOPT:http-referrer=https://ref.example.invalid/
+https://stream.example.invalid/live/cctv1.m3u8?token=REDACTED&expire=0
+#EXTINF:-1 group-title="央视",CCTV-2 财经
+http://stream.example.invalid/live/cctv2
+#EXTINF:-1 group-title="卫视",湖南卫视
+http://stream.example.invalid/live/hunan.m3u8?id=1
+#EXTINF:-1,缺少地址的孤儿条目
+#EXTINF:-1,协议不受支持
+udp://@239.0.0.1:1234
+#EXTINF:-1 group-title="卫视",湖南卫视
+http://stream.example.invalid/live/hunan.m3u8?id=1

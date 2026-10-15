@@ -1,0 +1,17 @@
+.DS_Store
+.gradle/
+.kotlin/
+local.properties
+**/build/
+*.iml
+.idea/
+artifacts/
+
+# Local assistant memory
+.workbuddy/
+
+# AVFoundation temporary media files
+*.sb-*
+
+# Native build intermediates
+**/.cxx/
